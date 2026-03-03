@@ -1,16 +1,30 @@
-const dns = require('dns'); dns.setServers(['8.8.8.8']);
+/* ================== DNS FIX ================== */
+const dns = require("dns");
+dns.setServers(["8.8.8.8"]);
 
+/* ================== IMPORTS ================== */
 require("dotenv").config();
+
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const argon2 = require("argon2");
+const multer = require("multer");
+const cloudinary = require("cloudinary").v2;
+const streamifier = require("streamifier");
 
 const app = express();
 
 /* ================== MIDDLEWARE ================== */
 app.use(cors());
 app.use(express.json());
+
+/* ================== CLOUDINARY CONFIG ================== */
+cloudinary.config({
+    cloud_name: process.env.CLOUD_NAME,
+    api_key: process.env.API_KEY,
+    api_secret: process.env.API_SECRET,
+});
 
 /* ================== MONGODB CONNECTION ================== */
 mongoose
@@ -25,31 +39,61 @@ mongoose.connection.on("error", (err) => {
 /* ================== USER SCHEMA ================== */
 const userSchema = new mongoose.Schema(
     {
-        username: {
-            type: String,
-            required: true,
-            unique: true,
-            trim: true,
-        },
-        password: {
-            type: String,
-            required: true,
-        },
+        username: { type: String, required: true, unique: true },
+        password: { type: String, required: true },
+
+        name: String,
+        email: String,
+        dob: Date,
+        gender: String,
+        problem: String,
+
+        documents: [String], // Cloudinary URLs
     },
     { timestamps: true }
 );
 
 const User = mongoose.model("User", userSchema);
 
+/* ================== MULTER MEMORY STORAGE ================== */
+const upload = multer({
+    storage: multer.memoryStorage(),
+});
+
+/* ================== CLOUDINARY UPLOAD HELPER ================== */
+const uploadToCloudinary = (buffer) => {
+    return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+            { resource_type: "auto" },
+            (error, result) => {
+                if (error) reject(error);
+                else resolve(result);
+            }
+        );
+
+        streamifier.createReadStream(buffer).pipe(stream);
+    });
+};
+
 /* ================== ROUTES ================== */
 
-// 🔐 REGISTER
+/* ---------- REGISTER ---------- */
+/* ================== REGISTER ---------- */
 app.post("/register", async (req, res) => {
     try {
-        const { username, password } = req.body;
+        const {
+            username,
+            password,
+            name,
+            email,
+            dob,
+            gender,
+            problem
+        } = req.body;
 
+        // Basic validation
         if (!username || !password) {
-            return res.status(400).json({ success: false, message: "All fields required" });
+            return res.status(400).json({ success: false, message: "Username & password required" });
         }
 
         const existingUser = await User.findOne({ username });
@@ -57,16 +101,18 @@ app.post("/register", async (req, res) => {
             return res.status(409).json({ success: false, message: "User already exists" });
         }
 
-        const hashedPassword = await argon2.hash(password, {
-            type: argon2.argon2id,
-            memoryCost: 2 ** 16,
-            timeCost: 3,
-            parallelism: 1,
-        });
+        // Hash password
+        const hashedPassword = await argon2.hash(password);
 
         const newUser = new User({
             username,
             password: hashedPassword,
+            name,
+            email,
+            dob,
+            gender,
+            problem,
+            documents: [] // empty for now
         });
 
         await newUser.save();
@@ -79,26 +125,38 @@ app.post("/register", async (req, res) => {
     }
 });
 
-// 🔐 LOGIN
+/* ---------- LOGIN ---------- */
 app.post("/login", async (req, res) => {
     try {
         const { username, password } = req.body;
 
         const user = await User.findOne({ username });
         if (!user) {
-            return res.status(401).json({ success: false, message: "Invalid credentials" });
+            return res.status(401).json({
+                success: false,
+                message: "Invalid credentials",
+            });
         }
 
-        const isValid = await argon2.verify(user.password, password);
-        if (!isValid) {
-            return res.status(401).json({ success: false, message: "Invalid credentials" });
+        const valid = await argon2.verify(user.password, password);
+        if (!valid) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid credentials",
+            });
         }
 
-        res.json({ success: true, message: "Login successful" });
+        res.json({
+            success: true,
+            message: "Login successful",
+        });
 
     } catch (err) {
         console.error(err);
-        res.status(500).json({ success: false, message: "Server error" });
+        res.status(500).json({
+            success: false,
+            message: "Server error",
+        });
     }
 });
 
