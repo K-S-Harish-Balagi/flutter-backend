@@ -86,7 +86,7 @@ const uploadToCloudinary = (buffer) => {
 app.post("/register", upload.single("idDoc"), async (req, res) => {
     try {
         const { username, password, name, email, dob, gender, problem } = req.body;
-
+        username = email;
         // 1️⃣ Basic validation
         if (!username || !password) {
             return res.status(400).json({ success: false, message: "Username & password required" });
