@@ -4,6 +4,7 @@ dns.setServers(["8.8.8.8"]);
 
 /* ================== IMPORTS ================== */
 require("dotenv").config();
+const jwt = require("jsonwebtoken");
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -11,6 +12,7 @@ const argon2 = require("argon2");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
 const streamifier = require("streamifier");
+const { nanoid } = require("nanoid");
 
 const app = express();
 
@@ -60,41 +62,80 @@ const documentSchema = new mongoose.Schema({
     url: String
 }, { timestamps: true });
 
+/* ================== PATIENT ID ================== */
+
 function generatePatientId() {
-    const random = Math.floor(10000 + Math.random() * 90000);
-    return "PAT" + random;
+    return "PAT" + nanoid(5);
 }
+
+/* ================== MODELS ================== */
 
 const Login = mongoose.model("Login", loginSchema);
 const UserDetails = mongoose.model("UserDetails", userSchema);
 const Documents = mongoose.model("Documents", documentSchema);
 
-/* ================== MULTER MEMORY STORAGE ================== */
-const upload = multer({ storage: multer.memoryStorage() });
+/* ================== MULTER ================== */
 
-/* ================== CLOUDINARY UPLOAD HELPER ================== */
+const upload = multer({
+    storage: multer.memoryStorage()
+});
+
+/* ================== CLOUDINARY HELPER ================== */
+
 const uploadToCloudinary = (buffer) => {
     return new Promise((resolve, reject) => {
+
         const stream = cloudinary.uploader.upload_stream(
             { resource_type: "auto" },
             (error, result) => {
+
                 if (error) reject(error);
                 else resolve(result);
+
             }
         );
+
         streamifier.createReadStream(buffer).pipe(stream);
+
     });
 };
 
+/* ================== AUTH MIDDLEWARE ================== */
+
+function authenticateToken(req, res, next) {
+
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.split(" ")[1];
+
+    if (!token) {
+
+        return res.status(401).json({
+            success: false,
+            message: "Token required"
+        });
+
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        if (err) {
+            return res.status(403).json({
+                success: false,
+                message: "Invalid token"
+            });
+        }
+        req.user = user;
+        next();
+    });
+}
+
 /* ================== ROUTES ================== */
 
+
 /* ---------- REGISTER ---------- */
+
 app.post("/register", upload.single("idDoc"), async (req, res) => {
     try {
-
         const { email, password, name, dob, gender, problem } = req.body;
-
-        // Basic validation
         if (!password) {
             return res.status(400).json({
                 success: false,
@@ -102,19 +143,13 @@ app.post("/register", upload.single("idDoc"), async (req, res) => {
             });
         }
 
-        // Hash password
         const hashedPassword = await argon2.hash(password);
-
-        // Generate patient ID
         const patientId = generatePatientId();
-
-        // Create Login record
         const login = await Login.create({
             patientId,
             password: hashedPassword
         });
 
-        // Create UserDetails record
         await UserDetails.create({
             loginId: login._id,
             name,
@@ -124,36 +159,38 @@ app.post("/register", upload.single("idDoc"), async (req, res) => {
             problem
         });
 
-        // Upload document if provided
         if (req.file) {
 
             const result = await uploadToCloudinary(req.file.buffer);
-
             await Documents.create({
                 userId: login._id,
                 docType: "ID Proof",
                 url: result.secure_url
             });
+
         }
 
         res.status(201).json({
             success: true,
             message: "User registered successfully",
-            patientId: patientId
+            patientId
         });
 
     } catch (err) {
 
         console.error(err);
-
         res.status(500).json({
             success: false,
             message: "Server error"
         });
+
     }
+
 });
 
+
 /* ---------- LOGIN ---------- */
+
 app.post("/login", async (req, res) => {
 
     try {
@@ -161,34 +198,51 @@ app.post("/login", async (req, res) => {
         const { patientId, password } = req.body;
 
         if (!patientId || !password) {
+
             return res.status(400).json({
                 success: false,
                 message: "Patient ID and password required"
             });
+
         }
 
+        
         const login = await Login.findOne({ patientId });
 
         if (!login) {
+
             return res.status(401).json({
                 success: false,
                 message: "Invalid credentials"
             });
+
         }
 
         const valid = await argon2.verify(login.password, password);
 
         if (!valid) {
+
             return res.status(401).json({
                 success: false,
                 message: "Invalid credentials"
             });
+
         }
+
+        const token = jwt.sign(
+            {
+                id: login._id,
+                patientId: login.patientId
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: "7d" }
+        );
 
         res.json({
             success: true,
             message: "Login successful",
-            patientId: login.patientId
+            patientId: login.patientId,
+            token
         });
 
     } catch (err) {
@@ -199,10 +253,48 @@ app.post("/login", async (req, res) => {
             success: false,
             message: "Server error"
         });
+
     }
+
 });
 
+
+/* ---------- PROFILE ---------- */
+
+app.get("/profile", authenticateToken, async (req, res) => {
+
+    try {
+
+        const profile = await UserDetails.findOne({
+            loginId: req.user.id
+        });
+
+        const docs = await Documents.find({
+            userId: req.user.id
+        });
+
+        res.json({
+            success: true,
+            profile,
+            documents: docs
+        });
+
+    } catch (err) {
+
+        console.error(err);
+
+        res.status(500).json({
+            success: false,
+            message: "Server error"
+        });
+
+    }
+
+});
+
+
 /* ================== SERVER START ================== */
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
