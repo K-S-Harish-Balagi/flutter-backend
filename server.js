@@ -12,7 +12,8 @@ const argon2 = require("argon2");
 const multer = require("multer");
 const cloudinary = require("cloudinary").v2;
 const streamifier = require("streamifier");
-const { nanoid } = require("nanoid");
+const { customAlphabet } = require("nanoid");
+const numericId = customAlphabet("0123456789", 5);
 
 const app = express();
 
@@ -65,9 +66,8 @@ const documentSchema = new mongoose.Schema({
 /* ================== PATIENT ID ================== */
 
 function generatePatientId() {
-    return "PAT" + nanoid(5);
+    return "PAT" + numericId();
 }
-
 /* ================== MODELS ================== */
 
 const Login = mongoose.model("Login", loginSchema);
