@@ -278,6 +278,25 @@ app.post("/supervisor-login", async (req, res) => {
     }
 });
 
+/* ---------- SUPERVISOR NAME ---------- */
+app.get("/supervisor-name/:supervisorId", authenticateToken, async (req, res) => {
+    try {
+        const supervisor = await Supervisor.findOne({
+            supervisorId: req.params.supervisorId
+        }).select("name supervisorId");
+
+        if (!supervisor) {
+            return res.status(404).json({ success: false, message: "Supervisor not found" });
+        }
+
+        res.json({ success: true, name: supervisor.name, supervisorId: supervisor.supervisorId });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+
 /* ---------- PATIENT PROFILE ---------- */
 app.get("/profile", authenticateToken, async (req, res) => {
     try {

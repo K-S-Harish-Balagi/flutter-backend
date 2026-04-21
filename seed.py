@@ -6,7 +6,7 @@ import random
 config = dotenv_values(".env")
 
 client = MongoClient(config["MONGO_URI"])
-db = client["test"]  # change if your db name is different
+db = client["flutterLoginDB"]  
 
 ph = argon2.PasswordHasher()
 
