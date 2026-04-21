@@ -38,90 +38,90 @@ mongoose.connection.on("error", (err) => {
     console.error("MongoDB runtime error:", err);
 });
 
+/* ================== ID GENERATORS ================== */
+function generatePatientId() { return "PAT" + numericId(); }
+function generateTherapistId() { return "THE" + numericId(); }
+function generateSupervisorId() { return "SUP" + numericId(); }
+
 /* ================== SCHEMAS ================== */
 
-// Login table
 const loginSchema = new mongoose.Schema({
     patientId: { type: String, unique: true, required: true },
     password: { type: String, required: true },
 }, { timestamps: true });
 
-// User details table
 const userSchema = new mongoose.Schema({
-    loginId: { type: mongoose.Schema.Types.ObjectId, ref: 'Login', required: true },
+    loginId: { type: mongoose.Schema.Types.ObjectId, ref: "Login", required: true },
     name: String,
     email: String,
     dob: Date,
     gender: String,
-    problem: String
+    problem: String,
 }, { timestamps: true });
 
-// Documents table
 const documentSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'Login', required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "Login", required: true },
     docType: String,
-    url: String
+    url: String,
 }, { timestamps: true });
 
-/* ================== PATIENT ID ================== */
+const therapistSchema = new mongoose.Schema({
+    therapistId: { type: String, unique: true, required: true },
+    password: { type: String, required: true },
+    name: String,
+}, { timestamps: true });
 
-function generatePatientId() {
-    return "PAT" + numericId();
-}
+const supervisorSchema = new mongoose.Schema({
+    supervisorId: { type: String, unique: true, required: true },
+    password: { type: String, required: true },
+    name: String,
+}, { timestamps: true });
+
+const reportSchema = new mongoose.Schema({
+    therapistId: { type: String, required: true },
+    patientId: { type: String, required: true },
+    supervisorId: { type: String, required: true },
+    url: { type: String, required: true },
+    docType: { type: String, default: "Report" },
+}, { timestamps: true });
+
 /* ================== MODELS ================== */
-
 const Login = mongoose.model("Login", loginSchema);
 const UserDetails = mongoose.model("UserDetails", userSchema);
 const Documents = mongoose.model("Documents", documentSchema);
+const Therapist = mongoose.model("Therapist", therapistSchema);
+const Supervisor = mongoose.model("Supervisor", supervisorSchema);
+const Report = mongoose.model("Report", reportSchema);
 
 /* ================== MULTER ================== */
-
-const upload = multer({
-    storage: multer.memoryStorage()
-});
+const upload = multer({ storage: multer.memoryStorage() });
 
 /* ================== CLOUDINARY HELPER ================== */
-
 const uploadToCloudinary = (buffer) => {
     return new Promise((resolve, reject) => {
-
         const stream = cloudinary.uploader.upload_stream(
             { resource_type: "auto" },
             (error, result) => {
-
                 if (error) reject(error);
                 else resolve(result);
-
             }
         );
-
         streamifier.createReadStream(buffer).pipe(stream);
-
     });
 };
 
 /* ================== AUTH MIDDLEWARE ================== */
-
 function authenticateToken(req, res, next) {
-
     const authHeader = req.headers["authorization"];
     const token = authHeader && authHeader.split(" ")[1];
 
     if (!token) {
-
-        return res.status(401).json({
-            success: false,
-            message: "Token required"
-        });
-
+        return res.status(401).json({ success: false, message: "Token required" });
     }
 
     jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
         if (err) {
-            return res.status(403).json({
-                success: false,
-                message: "Invalid token"
-            });
+            return res.status(403).json({ success: false, message: "Invalid token" });
         }
         req.user = user;
         next();
@@ -130,173 +130,204 @@ function authenticateToken(req, res, next) {
 
 /* ================== ROUTES ================== */
 
-
-/* ---------- REGISTER ---------- */
-
+/* ---------- PATIENT REGISTER ---------- */
 app.post("/register", upload.single("idDoc"), async (req, res) => {
     try {
         const { email, password, name, dob, gender, problem } = req.body;
         if (!password) {
-            return res.status(400).json({
-                success: false,
-                message: "Password required"
-            });
+            return res.status(400).json({ success: false, message: "Password required" });
         }
 
         const hashedPassword = await argon2.hash(password);
         const patientId = generatePatientId();
-        const login = await Login.create({
-            patientId,
-            password: hashedPassword
-        });
+        const login = await Login.create({ patientId, password: hashedPassword });
 
-        await UserDetails.create({
-            loginId: login._id,
-            name,
-            email,
-            dob,
-            gender,
-            problem
-        });
+        await UserDetails.create({ loginId: login._id, name, email, dob, gender, problem });
 
         if (req.file) {
-
             const result = await uploadToCloudinary(req.file.buffer);
-            await Documents.create({
-                userId: login._id,
-                docType: "ID Proof",
-                url: result.secure_url
-            });
-
+            await Documents.create({ userId: login._id, docType: "ID Proof", url: result.secure_url });
         }
 
-        res.status(201).json({
-            success: true,
-            message: "User registered successfully",
-            patientId
-        });
-
+        res.status(201).json({ success: true, message: "User registered successfully", patientId });
     } catch (err) {
-
         console.error(err);
-        res.status(500).json({
-            success: false,
-            message: "Server error"
-        });
-
+        res.status(500).json({ success: false, message: "Server error" });
     }
-
 });
 
-
-/* ---------- LOGIN ---------- */
-
+/* ---------- PATIENT LOGIN ---------- */
 app.post("/login", async (req, res) => {
-
     try {
-
         const { patientId, password } = req.body;
 
         if (!patientId || !password) {
-
-            return res.status(400).json({
-                success: false,
-                message: "Patient ID and password required"
-            });
-
+            return res.status(400).json({ success: false, message: "Patient ID and password required" });
         }
 
-        
         const login = await Login.findOne({ patientId });
-
         if (!login) {
-
-            return res.status(401).json({
-                success: false,
-                message: "Invalid credentials"
-            });
-
+            return res.status(401).json({ success: false, message: "Invalid credentials" });
         }
 
         const valid = await argon2.verify(login.password, password);
-
         if (!valid) {
-
-            return res.status(401).json({
-                success: false,
-                message: "Invalid credentials"
-            });
-
+            return res.status(401).json({ success: false, message: "Invalid credentials" });
         }
 
         const token = jwt.sign(
-            {
-                id: login._id,
-                patientId: login.patientId
-            },
+            { id: login._id, patientId: login.patientId, role: "patient" },
             process.env.JWT_SECRET,
             { expiresIn: "7d" }
         );
 
-        res.json({
-            success: true,
-            message: "Login successful",
-            patientId: login.patientId,
-            token
-        });
-
+        res.json({ success: true, message: "Login successful", patientId: login.patientId, role: "patient", token });
     } catch (err) {
-
         console.error(err);
-
-        res.status(500).json({
-            success: false,
-            message: "Server error"
-        });
-
+        res.status(500).json({ success: false, message: "Server error" });
     }
-
 });
 
+/* ---------- THERAPIST LOGIN ---------- */
+app.post("/therapist-login", async (req, res) => {
+    try {
+        const { patientId, password } = req.body;
+
+        if (!patientId || !password) {
+            return res.status(400).json({ success: false, message: "Therapist ID and password required" });
+        }
+
+        const therapist = await Therapist.findOne({ therapistId: patientId });
+        if (!therapist) {
+            return res.status(401).json({ success: false, message: "Invalid credentials" });
+        }
+
+        const valid = await argon2.verify(therapist.password, password);
+        if (!valid) {
+            return res.status(401).json({ success: false, message: "Invalid credentials" });
+        }
+
+        const token = jwt.sign(
+            { id: therapist._id, patientId: therapist.therapistId, role: "therapist" },
+            process.env.JWT_SECRET,
+            { expiresIn: "7d" }
+        );
+
+        res.json({ success: true, message: "Login successful", patientId: therapist.therapistId, role: "therapist", token });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+/* ---------- SUPERVISOR LOGIN ---------- */
+app.post("/supervisor-login", async (req, res) => {
+    try {
+        const { patientId, password } = req.body;
+
+        if (!patientId || !password) {
+            return res.status(400).json({ success: false, message: "Supervisor ID and password required" });
+        }
+
+        const supervisor = await Supervisor.findOne({ supervisorId: patientId });
+        if (!supervisor) {
+            return res.status(401).json({ success: false, message: "Invalid credentials" });
+        }
+
+        const valid = await argon2.verify(supervisor.password, password);
+        if (!valid) {
+            return res.status(401).json({ success: false, message: "Invalid credentials" });
+        }
+
+        const token = jwt.sign(
+            { id: supervisor._id, patientId: supervisor.supervisorId, role: "supervisor" },
+            process.env.JWT_SECRET,
+            { expiresIn: "7d" }
+        );
+
+        res.json({ success: true, message: "Login successful", patientId: supervisor.supervisorId, role: "supervisor", token });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
 
 /* ---------- PROFILE ---------- */
-
 app.get("/profile", authenticateToken, async (req, res) => {
-
     try {
-
-        const profile = await UserDetails.findOne({
-            loginId: req.user.id
-        });
-
-        const docs = await Documents.find({
-            userId: req.user.id
-        });
-
-        res.json({
-            success: true,
-            profile,
-            documents: docs
-        });
-
+        const profile = await UserDetails.findOne({ loginId: req.user.id });
+        const docs = await Documents.find({ userId: req.user.id });
+        res.json({ success: true, profile, documents: docs });
     } catch (err) {
-
         console.error(err);
-
-        res.status(500).json({
-            success: false,
-            message: "Server error"
-        });
-
+        res.status(500).json({ success: false, message: "Server error" });
     }
-
 });
 
+/* ---------- SEND REPORT (therapist only) ---------- */
+app.post("/send-report", authenticateToken, upload.single("report"), async (req, res) => {
+    try {
+        if (req.user.role !== "therapist") {
+            return res.status(403).json({ success: false, message: "Only therapists can send reports" });
+        }
+
+        const { patientId, supervisorId } = req.body;
+
+        if (!patientId || !supervisorId) {
+            return res.status(400).json({ success: false, message: "Patient ID and Supervisor ID required" });
+        }
+
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: "Report file required" });
+        }
+
+        // Verify supervisor exists
+        const supervisor = await Supervisor.findOne({ supervisorId });
+        if (!supervisor) {
+            return res.status(404).json({ success: false, message: "Supervisor not found" });
+        }
+
+        const result = await uploadToCloudinary(req.file.buffer);
+
+        await Report.create({
+            therapistId: req.user.patientId,
+            patientId,
+            supervisorId,
+            url: result.secure_url,
+            docType: req.file.mimetype.includes("pdf") ? "PDF" : "Image",
+        });
+
+        res.json({ success: true, message: "Report sent successfully" });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+/* ---------- GET REPORTS ---------- */
+app.get("/get-reports", authenticateToken, async (req, res) => {
+    try {
+        let reports;
+
+        if (req.user.role === "therapist") {
+            // Therapist sees only reports they sent
+            reports = await Report.find({ therapistId: req.user.patientId }).sort({ createdAt: -1 });
+        } else if (req.user.role === "supervisor") {
+            // Supervisor sees all reports
+            reports = await Report.find().sort({ createdAt: -1 });
+        } else {
+            return res.status(403).json({ success: false, message: "Access denied" });
+        }
+
+        res.json({ success: true, reports });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
 
 /* ================== SERVER START ================== */
-
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
 });
