@@ -698,6 +698,24 @@ app.get("/appointments", authenticateToken, async (req, res) => {
     }
 });
 
+/* ---------- GET MY THERAPISTS (supervisor) ---------- */
+app.get("/my-therapists", authenticateToken, async (req, res) => {
+    try {
+        if (req.user.role !== "supervisor") {
+            return res.status(403).json({ success: false, message: "Access denied" });
+        }
+
+        const therapists = await Therapist.find({
+            supervisorId: req.user.patientId,
+        }).select("therapistId name supervisorId createdAt");
+
+        res.json({ success: true, therapists });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
 /* ================== SERVER START ================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
