@@ -92,6 +92,20 @@ const assignedSchema = new mongoose.Schema({
     patientId: { type: String, required: true, unique: true }, // one therapist per patient
 }, { timestamps: true });
 
+/* ================== APPOINTMENT SCHEMA ================== */
+const appointmentSchema = new mongoose.Schema({
+    therapistId: { type: String, required: true },
+    patientId: { type: String, required: true },
+    date: { type: String, required: true },
+    timeSlot: { type: String, required: true },
+    status: { type: String, default: "pending" },
+}, { timestamps: true });
+
+appointmentSchema.index({ patientId: 1, date: 1 }, { unique: true });
+appointmentSchema.index({ therapistId: 1, date: 1, timeSlot: 1 }, { unique: true });
+
+const Appointment = mongoose.model("Appointment", appointmentSchema);
+
 /* ================== MODELS ================== */
 const Login = mongoose.model("Login", loginSchema);
 const UserDetails = mongoose.model("UserDetails", userSchema);
@@ -519,6 +533,165 @@ app.get("/get-reports", authenticateToken, async (req, res) => {
         );
 
         res.json({ success: true, reports: enriched });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+/* ---------- MY THERAPIST (patient) ---------- */
+app.get("/my-therapist", authenticateToken, async (req, res) => {
+    try {
+        if (req.user.role !== "patient") {
+            return res.status(403).json({ success: false, message: "Access denied" });
+        }
+
+        const assignment = await Assigned.findOne({ patientId: req.user.patientId });
+        if (!assignment) {
+            return res.status(404).json({ success: false, message: "No therapist assigned" });
+        }
+
+        const therapist = await Therapist.findOne({
+            therapistId: assignment.therapistId,
+        }).select("name therapistId");
+
+        if (!therapist) {
+            return res.status(404).json({ success: false, message: "Therapist not found" });
+        }
+
+        res.json({
+            success: true,
+            therapistId: therapist.therapistId,
+            name: therapist.name,
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+/* ---------- AVAILABLE SLOTS ---------- */
+// GET /available-slots?therapistId=THE12345&date=2025-07-10
+app.get("/available-slots", authenticateToken, async (req, res) => {
+    try {
+        const { therapistId, date } = req.query;
+
+        if (!therapistId || !date) {
+            return res.status(400).json({ success: false, message: "therapistId and date required" });
+        }
+
+        const ALL_SLOTS = [
+            "10:00 AM", "11:00 AM", "12:00 PM",
+            "02:00 PM", "03:00 PM",
+        ];
+
+        const booked = await Appointment.find({ therapistId, date }).select("timeSlot");
+        const bookedSlots = new Set(booked.map((a) => a.timeSlot));
+
+        const available = ALL_SLOTS.filter((s) => !bookedSlots.has(s));
+
+        res.json({ success: true, available });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+/* ---------- BOOK APPOINTMENT ---------- */
+app.post("/appointment", authenticateToken, async (req, res) => {
+    try {
+        if (req.user.role !== "patient") {
+            return res.status(403).json({ success: false, message: "Only patients can book" });
+        }
+
+        const { date, timeSlot } = req.body;
+
+        if (!date || !timeSlot) {
+            return res.status(400).json({ success: false, message: "date and timeSlot required" });
+        }
+
+        // Get assigned therapist
+        const assignment = await Assigned.findOne({ patientId: req.user.patientId });
+        if (!assignment) {
+            return res.status(404).json({ success: false, message: "No therapist assigned" });
+        }
+
+        // One appointment per patient per day
+        const existingPatient = await Appointment.findOne({
+            patientId: req.user.patientId,
+            date,
+        });
+        if (existingPatient) {
+            return res.status(409).json({
+                success: false,
+                message: "You already have an appointment on this day",
+            });
+        }
+
+        // Slot must still be free for this therapist
+        const slotTaken = await Appointment.findOne({
+            therapistId: assignment.therapistId,
+            date,
+            timeSlot,
+        });
+        if (slotTaken) {
+            return res.status(409).json({
+                success: false,
+                message: "This slot is no longer available",
+            });
+        }
+
+        const appt = await Appointment.create({
+            therapistId: assignment.therapistId,
+            patientId: req.user.patientId,
+            date,
+            timeSlot,
+        });
+
+        res.status(201).json({ success: true, message: "Appointment booked", appointment: appt });
+    } catch (err) {
+        if (err.code === 11000) {
+            return res.status(409).json({ success: false, message: "Slot conflict, please pick another" });
+        }
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+/* ---------- GET APPOINTMENTS ---------- */
+// Patient → own appointments. Therapist → all their appointments.
+app.get("/appointments", authenticateToken, async (req, res) => {
+    try {
+        let query = {};
+
+        if (req.user.role === "patient") {
+            query.patientId = req.user.patientId;
+        } else if (req.user.role === "therapist") {
+            query.therapistId = req.user.patientId;
+        } else {
+            return res.status(403).json({ success: false, message: "Access denied" });
+        }
+
+        const appointments = await Appointment.find(query).sort({ date: 1, timeSlot: 1 });
+
+        // Enrich patient name for therapist view
+        const enriched = await Promise.all(
+            appointments.map(async (appt) => {
+                const obj = appt.toObject();
+                if (req.user.role === "therapist") {
+                    const login = await Login.findOne({ patientId: appt.patientId });
+                    if (login) {
+                        const details = await UserDetails.findOne({ loginId: login._id }).select("name");
+                        obj.patientName = details?.name ?? appt.patientId;
+                    } else {
+                        obj.patientName = appt.patientId;
+                    }
+                }
+                return obj;
+            })
+        );
+
+        res.json({ success: true, appointments: enriched });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, message: "Server error" });
