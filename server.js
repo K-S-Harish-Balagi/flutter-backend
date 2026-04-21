@@ -69,6 +69,7 @@ const therapistSchema = new mongoose.Schema({
     therapistId: { type: String, unique: true, required: true },
     password: { type: String, required: true },
     name: String,
+    supervisorId: { type: String, required: true },
 }, { timestamps: true });
 
 const supervisorSchema = new mongoose.Schema({
@@ -79,7 +80,6 @@ const supervisorSchema = new mongoose.Schema({
 
 const reportSchema = new mongoose.Schema({
     therapistId: { type: String, required: true },
-    patientId: { type: String, required: true },
     supervisorId: { type: String, required: true },
     url: { type: String, required: true },
     docType: { type: String, default: "Report" },
@@ -146,10 +146,18 @@ app.post("/register", upload.single("idDoc"), async (req, res) => {
 
         if (req.file) {
             const result = await uploadToCloudinary(req.file.buffer);
-            await Documents.create({ userId: login._id, docType: "ID Proof", url: result.secure_url });
+            await Documents.create({
+                userId: login._id,
+                docType: "ID Proof",
+                url: result.secure_url,
+            });
         }
 
-        res.status(201).json({ success: true, message: "User registered successfully", patientId });
+        res.status(201).json({
+            success: true,
+            message: "User registered successfully",
+            patientId,
+        });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, message: "Server error" });
@@ -181,7 +189,13 @@ app.post("/login", async (req, res) => {
             { expiresIn: "7d" }
         );
 
-        res.json({ success: true, message: "Login successful", patientId: login.patientId, role: "patient", token });
+        res.json({
+            success: true,
+            message: "Login successful",
+            patientId: login.patientId,
+            role: "patient",
+            token,
+        });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, message: "Server error" });
@@ -213,7 +227,13 @@ app.post("/therapist-login", async (req, res) => {
             { expiresIn: "7d" }
         );
 
-        res.json({ success: true, message: "Login successful", patientId: therapist.therapistId, role: "therapist", token });
+        res.json({
+            success: true,
+            message: "Login successful",
+            patientId: therapist.therapistId,
+            role: "therapist",
+            token,
+        });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, message: "Server error" });
@@ -245,14 +265,20 @@ app.post("/supervisor-login", async (req, res) => {
             { expiresIn: "7d" }
         );
 
-        res.json({ success: true, message: "Login successful", patientId: supervisor.supervisorId, role: "supervisor", token });
+        res.json({
+            success: true,
+            message: "Login successful",
+            patientId: supervisor.supervisorId,
+            role: "supervisor",
+            token,
+        });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
 
-/* ---------- PROFILE ---------- */
+/* ---------- PATIENT PROFILE ---------- */
 app.get("/profile", authenticateToken, async (req, res) => {
     try {
         const profile = await UserDetails.findOne({ loginId: req.user.id });
@@ -264,35 +290,46 @@ app.get("/profile", authenticateToken, async (req, res) => {
     }
 });
 
-/* ---------- SEND REPORT (therapist only) ---------- */
+/* ---------- THERAPIST ME ---------- */
+app.get("/therapist-me", authenticateToken, async (req, res) => {
+    try {
+        if (req.user.role !== "therapist") {
+            return res.status(403).json({ success: false, message: "Access denied" });
+        }
+
+        const therapist = await Therapist.findById(req.user.id).select("-password");
+        if (!therapist) {
+            return res.status(404).json({ success: false, message: "Therapist not found" });
+        }
+
+        res.json({ success: true, therapist });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
+/* ---------- SEND REPORT ---------- */
 app.post("/send-report", authenticateToken, upload.single("report"), async (req, res) => {
     try {
         if (req.user.role !== "therapist") {
             return res.status(403).json({ success: false, message: "Only therapists can send reports" });
         }
 
-        const { patientId, supervisorId } = req.body;
-
-        if (!patientId || !supervisorId) {
-            return res.status(400).json({ success: false, message: "Patient ID and Supervisor ID required" });
-        }
-
         if (!req.file) {
             return res.status(400).json({ success: false, message: "Report file required" });
         }
 
-        // Verify supervisor exists
-        const supervisor = await Supervisor.findOne({ supervisorId });
-        if (!supervisor) {
-            return res.status(404).json({ success: false, message: "Supervisor not found" });
+        const therapist = await Therapist.findById(req.user.id);
+        if (!therapist) {
+            return res.status(404).json({ success: false, message: "Therapist not found" });
         }
 
         const result = await uploadToCloudinary(req.file.buffer);
 
         await Report.create({
             therapistId: req.user.patientId,
-            patientId,
-            supervisorId,
+            supervisorId: therapist.supervisorId,
             url: result.secure_url,
             docType: req.file.mimetype.includes("pdf") ? "PDF" : "Image",
         });
@@ -310,10 +347,8 @@ app.get("/get-reports", authenticateToken, async (req, res) => {
         let reports;
 
         if (req.user.role === "therapist") {
-            // Therapist sees only reports they sent
             reports = await Report.find({ therapistId: req.user.patientId }).sort({ createdAt: -1 });
         } else if (req.user.role === "supervisor") {
-            // Supervisor sees all reports
             reports = await Report.find().sort({ createdAt: -1 });
         } else {
             return res.status(403).json({ success: false, message: "Access denied" });
